@@ -56,7 +56,8 @@ static void free_proxy(struct aa_proxy *proxy)
 
 void aa_proxy_kref(struct kref *kref)
 {
-	struct aa_proxy *proxy = container_of(kref, struct aa_proxy, count);
+	struct aa_proxy *proxy = container_of(kref, struct aa_proxy,
+					      count.count);
 
 	free_proxy(proxy);
 }
@@ -67,7 +68,8 @@ struct aa_proxy *aa_alloc_proxy(struct aa_label *label, gfp_t gfp)
 
 	new = kzalloc(sizeof(struct aa_proxy), gfp);
 	if (new) {
-		kref_init(&new->count);
+		kref_init(&new->count.count);
+		new->count.reftype = REF_PROXY;
 		rcu_assign_pointer(new->label, aa_get_label(label));
 	}
 	return new;
@@ -313,10 +315,8 @@ out:
 }
 
 
-static void label_destroy(struct aa_label *label)
+void aa_label_destroy(struct aa_label *label)
 {
-	struct aa_label *tmp;
-
 	AA_BUG(!label);
 
 	if (!label_isprofile(label)) {
@@ -332,16 +332,13 @@ static void label_destroy(struct aa_label *label)
 		}
 	}
 
-	if (rcu_dereference_protected(label->proxy->label, true) == label)
-		rcu_assign_pointer(label->proxy->label, NULL);
-
+	if (label->proxy) {
+		if (rcu_dereference_protected(label->proxy->label, true) == label)
+			rcu_assign_pointer(label->proxy->label, NULL);
+		aa_put_proxy(label->proxy);
+	}
 	aa_free_secid(label->secid);
 
-	tmp = rcu_dereference_protected(label->proxy->label, true);
-	if (tmp == label)
-		rcu_assign_pointer(label->proxy->label, NULL);
-
-	aa_put_proxy(label->proxy);
 	label->proxy = (struct aa_proxy *) PROXY_POISON + 1;
 }
 
@@ -350,7 +347,7 @@ void aa_label_free(struct aa_label *label)
 	if (!label)
 		return;
 
-	label_destroy(label);
+	aa_label_destroy(label);
 	kfree(label);
 }
 
@@ -375,7 +372,9 @@ static void label_free_rcu(struct rcu_head *head)
 
 void aa_label_kref(struct kref *kref)
 {
-	struct aa_label *label = container_of(kref, struct aa_label, count);
+	struct aa_label *label = container_of(kref, struct aa_label,
+					      count.count);
+
 	struct aa_ns *ns = labels_ns(label);
 
 	if (!ns) {
@@ -412,7 +411,9 @@ bool aa_label_init(struct aa_label *label, int size, gfp_t gfp)
 
 	label->size = size;			/* doesn't include null */
 	label->vec[size] = NULL;		/* null terminate */
-	kref_init(&label->count);
+	kref_init(&label->count.count);
+	label->count.reftype = REF_NS;		/* for aafs purposes */
+
 	RB_CLEAR_NODE(&label->node);
 
 	return true;
